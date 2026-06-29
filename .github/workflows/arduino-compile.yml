@@ -14,7 +14,7 @@ jobs:
       matrix:
         include:
           - name: Remote ESP-NOW
-            fqbn: esp32:esp32:esp32s3
+            fqbn: arduino:esp32:nano_nora
             sketch: firmware/remote_espnow
 
           - name: Dongle ESP-NOW Bridge
