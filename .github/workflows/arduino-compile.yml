@@ -13,11 +13,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Remote ESP-NOW
+          - name: Remote Arduino Nano ESP32
             fqbn: arduino:esp32:nano_nora
             sketch: firmware/remote_espnow
 
-          - name: Dongle ESP-NOW Bridge
+          - name: Dongle ESP32-C3
             fqbn: esp32:esp32:esp32c3
             sketch: firmware/dongle_espnow_bridge
 
@@ -30,6 +30,7 @@ jobs:
         with:
           fqbn: ${{ matrix.fqbn }}
           platforms: |
+            - name: arduino:esp32
             - name: esp32:esp32
               source-url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
           sketch-paths: |
