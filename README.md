@@ -36,13 +36,13 @@ It controls playback with no phone, or computer necessary, so you can relax and 
 
 **Spotify Integration:** Connects seamlessly directly with Spotify, and shows up as a speaker in the devices section
 
-**OLED Screen:** Toggleable (soon) OLED screen that allows for quick checking of what song is playing, or which radio station is on!
+**OLED Screen:** Toggleable OLED screen that allows for quick checking of what song is playing, or which radio station is on!
 
 **Uninterrupted listening:** ESP-NOW and unicast create a delayless connection between dongle and remote!
 
 **Headless Setup:** Runs headlessly after setup, with no monitor or keyboard required.
 
-**Custom PCB and custom case:** EEvery part, from the PCB to the case, was designed by yours truly, millimeter by millimeter, ensuring an accurate fit!
+**Custom PCB and custom case:** Every part, from the PCB to the case, was designed by yours truly, millimeter by millimeter, ensuring an accurate fit!
 
 
 ## How It Works
@@ -59,10 +59,12 @@ It controls playback with no phone, or computer necessary, so you can relax and 
 
 - Deep Sleep to save battery life
 
-- Toggable OLED
-
 - Smaller enclosure design
 
+## Controls
+- Next x3 opens service menu
+- Prev x3 toggles screen
+- Play/pause x3 toggles radio mode
 
 ## Media
 
@@ -87,11 +89,11 @@ It controls playback with no phone, or computer necessary, so you can relax and 
   * Pi server
   * Remote communication with server
   * OLED
+  * Toggleable OLED
 * Designed
   * Case
   * PCB
 * In Progress
-  * Toggleable OLED
   * Better case design
 * Planned
   * Battery system
