@@ -1,11 +1,3 @@
-// remote_espnow.ino
-// Wireless music remote: ESP32 + 2.42" SSD1309 OLED + buttons.
-// Talks ESP-NOW to the C3 Super Mini dongle on the Pi.
-//
-//   button press -> ESP-NOW BROADCAST of the command ("NEXT", "PLAY_PAUSE", ...)
-//   "ST|..." status from the Pi  -> arrives via ESP-NOW, drawn on the OLED
-//
-//
 // TODO: add deep-sleep-on-idle + button wake for battery life.
 
 #include <U8g2lib.h>
@@ -13,11 +5,11 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <math.h>
 
 #define ESPNOW_CHANNEL 1   // MUST match the dongle
 
-// ---- OLED: 2.42" SSD1309 128x64, 4-wire SPI (software SPI = any pins) ----
-// args: rotation, clock(SCK), data(SDA), cs, dc, reset
+// ---- OLED: 2.42" SSD1309 128x64, 4-wire SPI 9(Change for wtv screen you are running, this is the one I had)
 U8G2_SSD1309_128X64_NONAME0_F_4W_SW_SPI u8g2(U8G2_R0, D13, D11, D10, D9, D8);
 
 struct Button { uint8_t pin; const char* cmd; bool last; uint32_t tLast; };
@@ -32,10 +24,60 @@ Button buttons[] = {
 const int NUM_BUTTONS = sizeof(buttons) / sizeof(buttons[0]);
 const uint32_t DEBOUNCE_MS = 40;
 
-// ---- ESP-NOW ----
+
+const uint32_t NEXT_WINDOW_MS = 500;
+const int      NEXT_TRIPLE    = 3;
+int            nextCount       = 0;
+uint32_t       nextDeadline    = 0;
+
+// ---- service menu ----
+struct Service { const char* label; const char* cmd; bool destructive; };
+const Service SERVICES[] = {
+  { "Reconnect BT",    "SVC_BT",       false },
+  { "Restart Spotify", "SVC_SPOTIFY",  false },
+  { "Restart Radio",   "SVC_RADIO",    false },
+  { "Bounce Wi-Fi",    "SVC_WIFI",     false },
+  { "Shutdown",        "SVC_SHUTDOWN", true  },
+  { "Reboot",          "SVC_REBOOT",   true  },
+};
+const int NUM_SERVICES = sizeof(SERVICES) / sizeof(SERVICES[0]);
+
+enum UiMode { UI_NOWPLAYING, UI_MENU, UI_CONFIRM, UI_INTRO };
+UiMode   ui            = UI_NOWPLAYING;
+int      menuSel       = 0;     // highlighted service
+int      menuTop       = 0;     // first visible row (scroll offset)
+uint32_t menuDeadline  = 0;     // auto-close time
+const int      MENU_VISIBLE  = 4;      // rows that fit under the header
+const uint32_t MENU_TIMEOUT  = 8000;   // ms of inactivity before auto-close
+
+
+static uint8_t dongle_mac[6];
+static bool    have_dongle    = false;
+static uint8_t rxSrc[6];                 // sender MAC of the last frame
+const uint32_t HELLO_INTERVAL = 3000;    // ms between HELLO keepalives
+uint32_t       lastHelloMs     = 0;
+uint32_t       lastStatusMs     = 0;     // 0 = never heard from the Pi
+const uint32_t STALE_MS        = 6000;   // no status for this long -> "offline"
+bool           wasOnline       = false;
+
+// ---- display ----
+const int      TEXT_W   = 104;   // px available for title / artist
+const uint32_t FRAME_MS = 40;    // animation step (marquee + intros)
+uint32_t       lastFrameMs = 0;
+int            scroll1 = 0, scroll2 = 0; // marquee offsets for title / artist
+bool           scrolling = false;        // any line currently overflowing?
+String         shownLine1 = "", shownLine2 = "";  // text the marquee is tracking
+
+// theme and animation playing for radio stations
+enum Theme { TH_JAZZ, TH_ROCK, TH_ELECTRO, TH_GROOVE, TH_REGGAE, TH_WORLD, TH_DEFAULT };
+Theme          introTheme       = TH_DEFAULT;
+uint32_t       introStart       = 0;
+const uint32_t INTRO_MS         = 2000;  // how long the intro plays
+String         lastRadioStation = "";    // last station we animated for
+
 static uint8_t BROADCAST[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 
-// status bytes received from the dongle, consumed in loop()
+// status bytes received from the dongle
 static volatile bool   rxReady = false;
 static char            rxData[210];
 static volatile size_t rxLen = 0;
@@ -46,10 +88,13 @@ bool dirty = true;
 
 #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
 void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+  const uint8_t *src = info->src_addr;
 #else
 void onRecv(const uint8_t *mac, const uint8_t *data, int len) {
+  const uint8_t *src = mac;
 #endif
-  if (rxReady) return;                       // previous not consumed yet -> drop
+  memcpy(rxSrc, src, 6);                      // remember who sent it (the dongle)
+  if (rxReady) return;                        
   size_t n = (len < (int)sizeof(rxData) - 1) ? len : sizeof(rxData) - 1;
   memcpy(rxData, data, n);
   rxData[n] = '\0';
@@ -58,7 +103,8 @@ void onRecv(const uint8_t *mac, const uint8_t *data, int len) {
 }
 
 void sendCmd(const char* cmd) {
-  esp_now_send(BROADCAST, (const uint8_t*)cmd, strlen(cmd));
+  const uint8_t* dst = have_dongle ? dongle_mac : BROADCAST;
+  esp_now_send(dst, (const uint8_t*)cmd, strlen(cmd));
 }
 
 void setup() {
@@ -69,6 +115,7 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+  esp_wifi_set_ps(WIFI_PS_NONE);    
   if (esp_now_init() != ESP_OK) {
     Serial.println("esp_now_init failed");
   }
@@ -87,8 +134,66 @@ void setup() {
 
 void loop() {
   readButtons();
-  if (rxReady) { parseStatus(String(rxData)); rxReady = false; }
+  uint32_t now = millis();
+
+
+  if (nextDeadline && now >= nextDeadline) flushNext();
+
+  // autoclose service window
+  if (ui != UI_NOWPLAYING && menuDeadline && now >= menuDeadline) closeMenu();
+
+  // hello unicast
+  if (now - lastHelloMs >= HELLO_INTERVAL) { sendCmd("HELLO"); lastHelloMs = now; }
+
+  if (rxReady) {
+    String s = String(rxData);
+    if (s.startsWith("ST|")) {            // only trust real status frames
+      if (!have_dongle) learnDongle();    
+      parseStatus(s);
+      lastStatusMs = now;
+      recomputeScroll();
+
+      if (mode == "RADIO" && line1 != lastRadioStation) {
+        lastRadioStation = line1;
+        if (ui == UI_NOWPLAYING || ui == UI_INTRO) {
+          introTheme = themeFor(line1);
+          introStart = now;
+          ui = UI_INTRO;
+        }
+      } else if (mode != "RADIO") {
+        lastRadioStation = "";            
+      }
+    }
+    rxReady = false;
+  }
+
+  bool animating = (ui == UI_INTRO) || (ui == UI_NOWPLAYING && scrolling);
+  if (animating && now - lastFrameMs >= FRAME_MS) {
+    lastFrameMs = now;
+    if (ui == UI_NOWPLAYING) { scroll1++; scroll2++; }
+    dirty = true;
+  }
+  if (ui == UI_INTRO && now - introStart >= INTRO_MS) { ui = UI_NOWPLAYING; dirty = true; }
+
+
+  bool on = isOnline();
+  if (on != wasOnline) { wasOnline = on; dirty = true; }
+
   if (dirty) { drawScreen(); dirty = false; }
+}
+
+void learnDongle() {
+  memcpy(dongle_mac, rxSrc, 6);
+  esp_now_peer_info_t peer = {};
+  memcpy(peer.peer_addr, dongle_mac, 6);
+  peer.channel = ESPNOW_CHANNEL;
+  peer.encrypt = false;
+  esp_now_add_peer(&peer);
+  have_dongle = true;
+}
+
+bool isOnline() {
+  return lastStatusMs != 0 && (millis() - lastStatusMs) < STALE_MS;
 }
 
 
@@ -98,9 +203,96 @@ void readButtons() {
     bool s = digitalRead(buttons[i].pin);
     if (s != buttons[i].last && (now - buttons[i].tLast) > DEBOUNCE_MS) {
       buttons[i].tLast = now;
-      if (s == LOW) sendCmd(buttons[i].cmd);   // pressed
+      if (s == LOW) handlePress(buttons[i].cmd);   // pressed
       buttons[i].last = s;
     }
+  }
+}
+
+void flushNext() {
+  for (int i = 0; i < nextCount; i++) {
+    sendCmd("NEXT");
+    delay(10);                 // small gap so back-to-back sends don't drop
+  }
+  nextCount = 0;
+  nextDeadline = 0;
+}
+
+void openMenu() {
+  ui = UI_MENU;
+  menuSel = 0;
+  menuTop = 0;
+  menuDeadline = millis() + MENU_TIMEOUT;
+  dirty = true;
+}
+
+void closeMenu() {
+  ui = UI_NOWPLAYING;
+  menuDeadline = 0;
+  dirty = true;                // redraw the now-playing screen
+}
+
+void adjustScroll() {
+  if (menuSel < menuTop)                menuTop = menuSel;
+  if (menuSel >= menuTop + MENU_VISIBLE) menuTop = menuSel - MENU_VISIBLE + 1;
+}
+
+void handlePress(const char* cmd) {
+  uint32_t now = millis();
+
+  if (ui == UI_INTRO) ui = UI_NOWPLAYING;   // any press dismisses the intro
+
+  if (ui == UI_NOWPLAYING) {
+    if (strcmp(cmd, "NEXT") == 0) {
+      nextCount++;
+      nextDeadline = now + NEXT_WINDOW_MS;
+      if (nextCount >= NEXT_TRIPLE) {     // triple-click -> menu, send no skips
+        nextCount = 0;
+        nextDeadline = 0;
+        openMenu();
+      }
+      return;
+    }
+    flushNext();                          // any other button flushes pending skips
+    sendCmd(cmd);
+    return;
+  }
+
+  menuDeadline = now + MENU_TIMEOUT;
+
+  if (ui == UI_MENU) {
+    if (strcmp(cmd, "NEXT") == 0) {
+      menuSel = (menuSel + 1) % NUM_SERVICES;
+      adjustScroll();
+      dirty = true;
+    } else if (strcmp(cmd, "PREV") == 0) {
+      menuSel = (menuSel - 1 + NUM_SERVICES) % NUM_SERVICES;
+      adjustScroll();
+      dirty = true;
+    } else if (strcmp(cmd, "PLAY_PAUSE") == 0) {
+      if (SERVICES[menuSel].destructive) {
+        ui = UI_CONFIRM;
+        dirty = true;
+      } else {
+        sendCmd(SERVICES[menuSel].cmd);
+        closeMenu();
+      }
+    } else if (strcmp(cmd, "BT_CONNECT") == 0) {
+      closeMenu();                        // cancel, howeverr bt_connect button doesnt exist, so just here for future implementation 
+    }
+
+    return;
+  }
+
+  if (ui == UI_CONFIRM) {
+    if (strcmp(cmd, "PLAY_PAUSE") == 0) {
+      sendCmd(SERVICES[menuSel].cmd);
+      closeMenu();
+    } else {
+      ui = UI_MENU;                        // any other button backs out
+      dirty = true;
+    }
+    return;
   }
 }
 
@@ -111,38 +303,216 @@ void parseStatus(String s) {
     if (s[i] == '|') { f[n++] = s.substring(start, i); start = i + 1; }
   }
   if (n < 6) f[n++] = s.substring(start);
-  // f[0]="ST", f[1]=mode, f[2]=state, f[3]=line1, f[4]=line2, f[5]=vol
+
   mode = f[1]; state = f[2]; line1 = f[3]; line2 = f[4]; vol = f[5];
   dirty = true;
 }
 
-String fit(String s, int maxPx) {
-  if (u8g2.getStrWidth(s.c_str()) <= maxPx) return s;
-  while (s.length() > 1 && u8g2.getStrWidth((s + "..").c_str()) > maxPx)
-    s.remove(s.length() - 1);
-  return s + "..";
+void recomputeScroll() {
+  if (line1 != shownLine1) { scroll1 = 0; shownLine1 = line1; }
+  if (line2 != shownLine2) { scroll2 = 0; shownLine2 = line2; }
+  u8g2.setFont(u8g2_font_helvB10_tf);
+  bool s1 = u8g2.getStrWidth(line1.c_str()) > TEXT_W;
+  u8g2.setFont(u8g2_font_6x12_tf);
+  bool s2 = u8g2.getStrWidth(line2.c_str()) > TEXT_W;
+  scrolling = s1 || s2;
+}
+
+
+void drawScrolling(int x, int y, const String& s, int maxPx, int offset) {
+  int w = u8g2.getStrWidth(s.c_str());
+  if (w <= maxPx) { u8g2.drawStr(x, y, s.c_str()); return; }
+  const int gap = 18;
+  int period = w + gap;
+  int o = offset % period;
+  u8g2.setClipWindow(x, 0, x + maxPx, 63);
+  u8g2.drawStr(x - o, y, s.c_str());
+  u8g2.drawStr(x - o + period, y, s.c_str());
+  u8g2.setMaxClipWindow();
+}
+
+int parseVol(const String& v) {
+  if (v.length() == 0 || v == "?") return -1;
+  int n = v.toInt();
+  return n < 0 ? 0 : (n > 100 ? 100 : n);
 }
 
 void drawScreen() {
-  u8g2.clearBuffer();
+  switch (ui) {
+    case UI_MENU:    drawMenu();    break;
+    case UI_CONFIRM: drawConfirm(); break;
+    case UI_INTRO:   drawIntro();   break;
+    default:         drawNowPlaying();
+  }
+}
 
-  // top bar: mode (left), volume (right)
+void drawMenu() {
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_6x12_tf);
+  u8g2.drawStr(0, 10, "SERVICE MENU");
+  u8g2.drawHLine(0, 13, 128);
+
+  for (int row = 0; row < MENU_VISIBLE; row++) {
+    int idx = menuTop + row;
+    if (idx >= NUM_SERVICES) break;
+    int y = 25 + row * 12;                       // 25, 37, 49, 61
+    if (idx == menuSel) u8g2.drawStr(0, y, ">");
+    u8g2.drawStr(10, y, SERVICES[idx].label);
+  }
+
+  // scroll hints on the right edge
+  if (menuTop > 0)                          u8g2.drawStr(122, 25, "^");
+  if (menuTop + MENU_VISIBLE < NUM_SERVICES) u8g2.drawStr(122, 61, "v");
+
+  u8g2.sendBuffer();
+}
+
+void drawConfirm() {
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_6x12_tf);
+  u8g2.drawStr(0, 10, "CONFIRM");
+  u8g2.drawHLine(0, 13, 128);
+  u8g2.drawStr(0, 32, SERVICES[menuSel].label);
+  u8g2.drawStr(0, 48, "PLAY = confirm");
+  u8g2.drawStr(0, 60, "any other cancels");
+  u8g2.sendBuffer();
+}
+
+void drawNowPlaying() {
+  u8g2.clearBuffer();
+  bool online = isOnline();
+
+  // top bar: mode (left), link indicator (right)
   u8g2.setFont(u8g2_font_6x12_tf);
   u8g2.drawStr(0, 10, mode.c_str());
-  String v = "Vol " + vol + "%";
-  u8g2.drawStr(128 - u8g2.getStrWidth(v.c_str()), 10, v.c_str());
+  if (online) u8g2.drawDisc(124, 5, 3);     // filled = link up
+  else        u8g2.drawCircle(124, 5, 3);   // hollow = stale / no link
   u8g2.drawHLine(0, 13, 128);
+
+  if (lastStatusMs == 0) {
+    const char* w = "Waiting for Pi...";
+    u8g2.drawStr((128 - u8g2.getStrWidth(w)) / 2, 40, w);
+    u8g2.sendBuffer();
+    return;
+  }
 
   // play/pause indicator
   bool playing = (state == "PLAYING");
   u8g2.setFont(u8g2_font_open_iconic_play_2x_t);
   u8g2.drawGlyph(0, 36, playing ? 0x45 : 0x44);   // play / pause icon
 
-  // title (line1) + subtitle (line2)
+  // title (line1) + subtitle (line2), scrolling if too long to fit
   u8g2.setFont(u8g2_font_helvB10_tf);
-  u8g2.drawStr(22, 34, fit(line1, 104).c_str());
+  drawScrolling(22, 34, line1, TEXT_W, scroll1);
   u8g2.setFont(u8g2_font_6x12_tf);
-  u8g2.drawStr(22, 50, fit(line2, 104).c_str());
+  drawScrolling(22, 48, line2, TEXT_W, scroll2);
 
+  // volume bar along the bottom
+  int vpct = parseVol(vol);
+  u8g2.setFont(u8g2_font_5x7_tf);
+  u8g2.drawStr(0, 63, "Vol");
+  const int bx = 20, bw = 108;              // bar spans x = 20..128
+  u8g2.drawFrame(bx, 57, bw, 6);
+  if (vpct >= 0) u8g2.drawBox(bx + 1, 58, (bw - 2) * vpct / 100, 4);
+
+  u8g2.sendBuffer();
+}
+
+// ---- station intro animations ----------------------------------------------
+
+Theme themeFor(String name) {
+  name.toLowerCase();
+  if (name.indexOf("jazz")    >= 0) return TH_JAZZ;
+  if (name.indexOf("rock")    >= 0 || name.indexOf("metal") >= 0) return TH_ROCK;
+  if (name.indexOf("electro") >= 0) return TH_ELECTRO;
+  if (name.indexOf("groove")  >= 0) return TH_GROOVE;
+  if (name.indexOf("reggae")  >= 0) return TH_REGGAE;
+  if (name.indexOf("monde")   >= 0 || name.indexOf("world") >= 0) return TH_WORLD;
+  return TH_DEFAULT;
+}
+
+// music note for jazz and stuff
+void drawNote(int x, int y) {
+  u8g2.drawDisc(x, y, 2);
+  u8g2.drawVLine(x + 2, y - 9, 9);
+  u8g2.drawHLine(x + 2, y - 9, 3);
+}
+
+
+void animBars(uint32_t t, int n, float speed, float spread, int maxh) {
+  int slot = 128 / n;
+  for (int i = 0; i < n; i++) {
+    float p = t / speed + i * spread;
+    int h = 4 + (int)((sin(p) * 0.5 + 0.5) * maxh);
+    u8g2.drawBox(i * slot + 2, 50 - h, slot - 4, h);
+  }
+}
+
+void animRock(uint32_t t)    { animBars(t, 14,  90.0, 1.7, 44); }
+void animGroove(uint32_t t)  { animBars(t,  8, 260.0, 0.7, 40); }
+void animDefault(uint32_t t) { animBars(t, 10, 200.0, 0.6, 40); }
+
+void animJazz(uint32_t t) {
+  float ph = t / 1000.0;
+  for (int i = 0; i < 5; i++) {
+    int x = 16 + i * 24 + (int)(5 * sin(ph * 2 + i));
+    int y = 50 - ((int)(ph * 22 + i * 13) % 50);
+    drawNote(x, y);
+  }
+}
+
+void animElectro(uint32_t t) {
+  float ph = t / 140.0;
+  int py = 28;
+  for (int x = 0; x <= 128; x += 4) {
+    int y = 28 + (int)(16 * sin(x / 11.0 + ph));
+    if (x) u8g2.drawLine(x - 4, py, x, y);
+    py = y;
+  }
+  u8g2.drawCircle(64, 28, (t / 45) % 26);   // expanding pulse
+}
+
+void animReggae(uint32_t t) {
+  u8g2.drawBox(0,  0, 128, 5);              // three bands (mono stand-in)
+  u8g2.drawBox(0,  7, 128, 5);
+  u8g2.drawBox(0, 14, 128, 5);
+  int sy = 52 - (int)((t / 60) % 34);       // rising sun
+  u8g2.drawDisc(64, sy, 7);
+  for (int a = 0; a < 360; a += 45) {
+    float r = a * 0.0174533;
+    u8g2.drawLine(64 + cos(r) * 9, sy + sin(r) * 9,
+                  64 + cos(r) * 13, sy + sin(r) * 13);
+  }
+}
+
+void animWorld(uint32_t t) {
+  int cx = 64, cy = 28, R = 20;
+  u8g2.drawCircle(cx, cy, R);
+  u8g2.drawHLine(cx - R, cy, 2 * R);
+  u8g2.drawEllipse(cx, cy, R, R / 2);
+  float ph = t / 350.0;
+  for (int m = 0; m < 3; m++) {             // meridians sweeping = spin
+    int rx = (int)(R * fabs(sin(ph + m * 1.05)));
+    if (rx > 0) u8g2.drawEllipse(cx, cy, rx, R);
+  }
+}
+
+void drawIntro() {
+  uint32_t t = millis() - introStart;
+  u8g2.clearBuffer();
+  switch (introTheme) {
+    case TH_JAZZ:    animJazz(t);    break;
+    case TH_ROCK:    animRock(t);    break;
+    case TH_ELECTRO: animElectro(t); break;
+    case TH_GROOVE:  animGroove(t);  break;
+    case TH_REGGAE:  animReggae(t);  break;
+    case TH_WORLD:   animWorld(t);   break;
+    default:         animDefault(t);
+  }
+  // station name banner along the bottom
+  u8g2.setFont(u8g2_font_6x12_tf);
+  int nx = (128 - u8g2.getStrWidth(line1.c_str())) / 2;
+  if (nx < 0) nx = 0;
+  u8g2.drawStr(nx, 63, line1.c_str());
   u8g2.sendBuffer();
 }

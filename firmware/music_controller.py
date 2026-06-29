@@ -20,9 +20,16 @@ RADIO_STATIONS = [
     ("FIP Nouveautes", "https://icecast.radiofrance.fr/fipnouveautes-midfi.mp3"),
     ("FIP Reggae",     "https://icecast.radiofrance.fr/fipreggae-midfi.mp3"),
     ("FIP Electro",    "https://icecast.radiofrance.fr/fipelectro-midfi.mp3"),
+    ("FIP Pop",        "https://icecast.radiofrance.fr/fippop-midfi.mp3"),
+    ("FIP Metal",      "https://icecast.radiofrance.fr/fipmetal-midfi.mp3"),
+    ("FIP Hip-Hop",    "https://icecast.radiofrance.fr/fiphiphop-midfi.mp3"),
     ("TSF Jazz",       "https://tsfjazz.ice.infomaniak.ch/tsfjazz-high.mp3"),
+    ("SomaFM Groove Salad", "https://ice1.somafm.com/groovesalad-128-mp3"),
+    ("SomaFM Lush",         "https://ice1.somafm.com/lush-128-mp3"),
+    ("Radio Paradise Rock", "https://stream.radioparadise.com/rock-128"),
+    ("Radio Paradise Jazz", "https://stream.radioparadise.com/jazz-128"),
 ]
-#Customizable radio stations, but theser are the ones i found
+
 
 VALID_COMMANDS = {
     "PLAY_PAUSE",
@@ -30,8 +37,7 @@ VALID_COMMANDS = {
     "PREV",
     "VOL_UP",
     "VOL_DOWN",
-    "BT_CONNECT",
-    # Service menu (triggered by holding NEXT on the remote)
+    # Service menu (triggered by pressing NEXT 3 times in a row on the remote)
     "SVC_BT",        # disconnect + reconnect the Bluetooth speaker
     "SVC_SPOTIFY",   # restart the spotifyd user service
     "SVC_RADIO",     # restart the current radio stream
@@ -85,7 +91,6 @@ def connect_bluetooth_speaker():
     return False
 
 
-# ----- Spotify (playerctl / spotifyd) -----
 def spotify_action(action):
     result = subprocess.run(
         ["playerctl", action],
@@ -96,7 +101,6 @@ def spotify_action(action):
         log("playerctl error:", result.stderr.strip())
 
 
-# ----- Radio (mpv) -----
 def radio_is_playing():
     return radio_player is not None and radio_player.poll() is None
 
@@ -145,27 +149,24 @@ def radio_play_pause():
 def toggle_radio_mode():
     global radio_mode
     if not radio_mode:
-        log("=== Switching to RADIO mode ===")
+        log("Switching to RADIO mode")
         radio_mode = True
         spotify_action("pause")          # quiet Spotify before radio starts
         radio_start(radio_index)
     else:
-        log("=== Switching to SPOTIFY mode ===")
+        log("Switching to SPOTIFY mode")
         radio_mode = False
         radio_stop()
         spotify_action("play")           # resume Spotify playback
 
 
-# ----- PLAY_PAUSE burst handling -----
 def register_play_pause():
-    """Record a PLAY_PAUSE press and (re)arm the burst evaluation window."""
     global pp_count, pp_deadline
     pp_count += 1
     pp_deadline = time.monotonic() + PP_WINDOW
 
 
 def flush_play_pause():
-    """Evaluate a completed PLAY_PAUSE burst."""
     global pp_count, pp_deadline
     n = pp_count
     pp_count = 0
@@ -175,7 +176,6 @@ def flush_play_pause():
     if n >= TRIPLE_PRESS:
         toggle_radio_mode()
     else:
-        # 1 or 2 presses -> a single play/pause toggle in the current mode
         if radio_mode:
             radio_play_pause()
         else:
@@ -198,7 +198,7 @@ def svc_restart_spotify():
 def svc_restart_radio():
     log("Service: restart radio stream")
     if radio_mode:
-        radio_start(radio_index)        # radio_start() stops any current stream first
+        radio_start(radio_index)        
     else:
         log("(not in radio mode; nothing to restart)")
 
@@ -211,7 +211,6 @@ def svc_restart_wifi():
 
 
 def svc_power(action):
-    """Safe shutdown / reboot. Needs the passwordless sudoers rule (see setup)."""
     log(f"Service: {action}")
     radio_stop()                      
     r = subprocess.run(
@@ -224,7 +223,6 @@ def svc_power(action):
 
 
 def handle_command(line):
-    """Handle any non-PLAY_PAUSE command. Pending bursts are flushed first."""
     flush_play_pause()
 
     if line == "NEXT":
@@ -270,7 +268,6 @@ def handle_command(line):
 
 # The Pi pushes the current state back over the same serial line as a single
 # pipe-delimited line:  ST|<mode>|<state>|<line1>|<line2>|<volume%>
-# e.g.  ST|SPOTIFY|PLAYING|Get Lucky|Daft Punk|63
 STATUS_INTERVAL = 2.0     # seconds between periodic status pushes
 last_status = 0.0
 

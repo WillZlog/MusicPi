@@ -1,25 +1,13 @@
-// dongle_espnow_bridge.ino
-// ESP32-C3 Super Mini -- transparent ESP-NOW <-> USB-serial bridge.
-//
-// Lives plugged into the Raspberry Pi
-//
-// Wireless protocol:
-//   Remote -> dongle : command strings ("NEXT", "PLAY_PAUSE", ...) via ESP-NOW BROADCAST
-//   dongle -> Remote : "ST|..." status lines, UNICAST back to whoever last sent a command
-//
-//
-// Build settings (Arduino IDE / arduino-cli), board "ESP32C3 Dev Module":
-//   - USB CDC On Boot: "Enabled"  
-//   - Upload speed: 115200
-
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
 
 #define ESPNOW_CHANNEL 1
-#define LED_PIN 8         
+#define LED_PIN 8
 
-static uint8_t remote_mac[6];    
+static const uint8_t BROADCAST[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+
+static uint8_t remote_mac[6];
 static bool    have_remote = false;
 
 static char    out_line[260];     
@@ -45,8 +33,14 @@ void onRecv(const uint8_t *mac, const uint8_t *data, int len) {
     esp_now_add_peer(&peer);
     have_remote = true;
   }
-  Serial.write(data, len);
-  if (len == 0 || data[len - 1] != '\n') Serial.write('\n');
+
+  // "HELLO" is just the remote announcing itself so we learn its MAC and can
+  // unicast status back -- don't forward it to the Pi as a command.
+  bool is_hello = (len == 5 && memcmp(data, "HELLO", 5) == 0);
+  if (!is_hello) {
+    Serial.write(data, len);
+    if (len == 0 || data[len - 1] != '\n') Serial.write('\n');
+  }
 
   led(true);
   led_off_at = millis() + 30;     // brief activity flash
@@ -60,19 +54,27 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+  esp_wifi_set_ps(WIFI_PS_NONE);    // no modem sleep
 
   if (esp_now_init() != ESP_OK) {
     while (true) { led(true); delay(100); led(false); delay(100); }  // SOS blink
   }
   esp_now_register_recv_cb(onRecv);
+
+  esp_now_peer_info_t bpeer = {};
+  memcpy(bpeer.peer_addr, BROADCAST, 6);
+  bpeer.channel = ESPNOW_CHANNEL;
+  bpeer.encrypt = false;
+  esp_now_add_peer(&bpeer);
 }
 
 void loop() {
   while (Serial.available()) {
     char c = Serial.read();
     if (c == '\n' || c == '\r') {
-      if (out_len > 0 && have_remote) {
-        esp_now_send(remote_mac, (const uint8_t *)out_line, out_len);
+      if (out_len > 0) {
+        const uint8_t *dst = have_remote ? remote_mac : BROADCAST;
+        esp_now_send(dst, (const uint8_t *)out_line, out_len);
       }
       out_len = 0;
     } else if (out_len < sizeof(out_line) - 1) {

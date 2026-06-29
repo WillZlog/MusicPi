@@ -21,7 +21,7 @@ A server + remote that plays music so I don't have to be on my phone or on my co
 
 **Remote:** ESP32-C3 Super Mini, ESP32 S3
 
-**Raspberry Pi:** Python, SystemD
+**Raspberry Pi:** Python
 
 
 ## Roadmap
