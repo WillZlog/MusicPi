@@ -18,56 +18,6 @@ U8G2_SSD1309_128X64_NONAME0_F_4W_SW_SPI u8g2(U8G2_R0, D13, D11, D10, D9, D8);
 
 
 
-
-
-// ----------CONSTANT VARIABLES------------
-const int NUM_BUTTONS = sizeof(buttons) / sizeof(buttons[0]);
-const uint32_t DEBOUNCE_MS = 40;
-
-Button buttons[] = {
-    {D2, "PLAY_PAUSE", HIGH, 0},
-    {D3, "NEXT", HIGH, 0},
-    {D4, "PREV", HIGH, 0},
-    {D5, "VOL_UP", HIGH, 0},
-    {D6, "VOL_DOWN", HIGH, 0},
-    {D7, "BT_CONNECT", HIGH, 0},
-};
-
-//next conts
-const uint32_t NEXT_WINDOW_MS = 500;
-const int NEXT_TRIPLE = 3;
-
-// prev consts
-const uint32_t PREV_WINDOW_MS = 500;
-const int PREV_TRIPLE = 3;
-
-// service menu consts
-const Service SERVICES[] = {
-    {"Reconnect BT", "SVC_BT", false},
-    {"Restart Spotify", "SVC_SPOTIFY", false},
-    {"Restart Radio", "SVC_RADIO", false},
-    {"Bounce Wi-Fi", "SVC_WIFI", false},
-    {"Shutdown", "SVC_SHUTDOWN", true},
-    {"Reboot", "SVC_REBOOT", true},
-};
-const int NUM_SERVICES = sizeof(SERVICES) / sizeof(SERVICES[0]);
-
-// display consts
-const int MENU_VISIBLE = 4;         // rows that fit under the header
-const uint32_t MENU_TIMEOUT = 8000; // ms of inactivity before auto-close
-const int TEXT_W = 104;       // px available for title / artist
-const uint32_t FRAME_MS = 40; // animation step (marquee + intros)
-
-// display/intro consts
-const uint32_t INTRO_MS = 2000; // how long the intro plays
-
-// esp32 communication consts
-const uint32_t HELLO_INTERVAL = 3000; // ms between HELLO keepalives
-const uint32_t STALE_MS = 6000; // no status for this long -> "offline"
-// ---------------------------
-
-
-
 // ---------STRUCTS---------
 struct Button
 {
@@ -85,6 +35,54 @@ struct Service
 };
 // ---------------------------
 
+
+// ----------CONSTANT VARIABLES------------
+Button buttons[] = {
+    {D2, "PLAY_PAUSE", HIGH, 0},
+    {D3, "NEXT", HIGH, 0},
+    {D4, "PREV", HIGH, 0},
+    {D5, "VOL_UP", HIGH, 0},
+    {D6, "VOL_DOWN", HIGH, 0},
+    {D7, "BT_CONNECT", HIGH, 0},
+};
+
+const int NUM_BUTTONS = sizeof(buttons) / sizeof(buttons[0]);
+const uint32_t DEBOUNCE_MS = 40;
+
+//next conts
+const uint32_t NEXT_WINDOW_MS = 500;
+const int NEXT_TRIPLE = 3;
+
+// prev consts
+const uint32_t PREV_WINDOW_MS = 500;
+const int PREV_TRIPLE = 3;
+
+// service menu consts
+const Service SERVICES[] = {
+    {"Reconnect BT", "SVC_BT", false},
+    {"Toggle Screen Always On", "SAO", false},
+    {"Restart Spotify", "SVC_SPOTIFY", false},
+    {"Restart Radio", "SVC_RADIO", false},
+    {"Bounce Wi-Fi", "SVC_WIFI", false},
+    {"Shutdown", "SVC_SHUTDOWN", true},
+    {"Reboot", "SVC_REBOOT", true},
+};
+const int NUM_SERVICES = sizeof(SERVICES) / sizeof(SERVICES[0]);
+
+// display consts
+const int MENU_VISIBLE = 4;         // rows that fit under the header
+const uint32_t MENU_TIMEOUT = 8000; // ms of inactivity before auto-close
+const int TEXT_W = 104;       // px available for title / artist
+const uint32_t FRAME_MS = 40; // animation step (marquee + intros)
+
+// display/intro consts
+const uint32_t INTRO_MS = 2000; // how long the intro plays
+const uint32_t DISPLAY_TIMEOUT = 15000;
+
+// esp32 communication consts
+const uint32_t HELLO_INTERVAL = 3000; // ms between HELLO keepalives
+const uint32_t STALE_MS = 6000; // no status for this long -> "offline"
+// ---------------------------
 
 
 // ---------ENUMS-----------
@@ -113,6 +111,8 @@ enum Theme
 
 
 //-------GLOBAL VARIABLES----------
+uint32_t lastButtonPress;
+
 //next vars
 int nextCount = 0;
 uint32_t nextDeadline = 0;
@@ -145,6 +145,8 @@ int scroll1 = 0, scroll2 = 0;            // marquee offsets for title / artist
 bool scrolling = false;                  // any line currently overflowing?
 String shownLine1 = "", shownLine2 = ""; // text the marquee is tracking
 bool displayOn = true;
+bool displayHidden = false;
+bool displayAlwaysOn = false;
 
 
 // theme and animation playing for radio stations
@@ -314,6 +316,25 @@ void loop()
     drawScreen();
     dirty = false;
   }
+
+  if (now-lastButtonPress > DISPLAY_TIMEOUT)
+  {
+    if (!displayAlwaysOn)
+    {
+      displayHidden = true;
+      displayOn = false;
+      u8g2.setPowerSave(1);
+    }
+  }
+  else
+  {
+    if (displayHidden){
+      displayHidden = false;
+      displayOn = true;
+      u8g2.setPowerSave(0);
+      dirty = true;
+    }
+  }
 }
 
 void learnDongle()
@@ -415,6 +436,12 @@ void handlePress(const char *cmd)
 {
   uint32_t now = millis();
 
+  lastButtonPress = now;
+
+  if (displayHidden)
+  {
+    return;
+  }
   if (ui == UI_INTRO)
     ui = UI_NOWPLAYING; // any press dismisses the intro
 
@@ -478,7 +505,11 @@ void handlePress(const char *cmd)
     }
     else if (strcmp(cmd, "PLAY_PAUSE") == 0)
     {
-      if (SERVICES[menuSel].destructive)
+      if (SERVICES[menuSel].cmd == "SAO")
+      {
+        displayAlwaysOn = !displayAlwaysOn;
+      }
+      else if (SERVICES[menuSel].destructive)
       {
         ui = UI_CONFIRM;
         dirty = true;
@@ -584,7 +615,7 @@ int parseVol(const String &v)
 
 void drawScreen()
 {
-  if (!displayOn)
+  if (!displayOn || displayHidden)
     return;
 
   switch (ui)
