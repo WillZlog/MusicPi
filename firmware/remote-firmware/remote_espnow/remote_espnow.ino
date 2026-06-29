@@ -149,7 +149,7 @@ String shownLine1 = "", shownLine2 = ""; // text the marquee is tracking
 bool displayOn = true;
 bool displayHidden = false;
 bool displayAlwaysOn = false;
-bool startupDone = false;
+bool starupDone = false;
 
 
 // theme and animation playing for radio stations
@@ -245,7 +245,7 @@ void loop()
   readButtons();
   uint32_t now = millis(); // async delay()s basically along with below code
 
-  if (!startupDone)
+  if (!starupDone)
     if (now < 3000)
     {
       ui = UI_STARTUP;
@@ -254,7 +254,7 @@ void loop()
     }
     else 
     {
-      startupDone = true;
+      starupDone = true;
       ui=UI_NOWPLAYING;
       dirty = true;
     }
@@ -632,7 +632,7 @@ int parseVol(const String &v)
 
 void drawScreen()
 {
-  if (!startupDone){
+  if (!starupDone){
     drawStartup();
     return;
   }
