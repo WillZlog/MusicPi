@@ -1,0 +1,112 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.python-version
+.venv/
+venv/
+env/
+ENV/
+pip-wheel-metadata/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Python build/package files
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+logs/
+
+# Environment / secrets
+.env
+.env.*
+*.env
+secrets.*
+config.local.*
+credentials.*
+
+# Arduino build output
+build/
+*.elf
+*.bin
+*.hex
+*.map
+*.eep
+*.lst
+
+# Arduino temporary files
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# Arduino IDE / CLI
+.arduino/
+arduino-cli.yaml
+
+# KiCad backup / autosave files
+*.bak
+*.bck
+*.kicad_pcb-bak
+*.kicad_sch-bak
+*.sch-bak
+*.pcb-bak
+*-backups/
+_autosave-*
+*.lck
+
+# KiCad generated manufacturing files
+# Keep these ignored unless you intentionally want to commit release Gerbers.
+gerbers/
+Gerbers/
+production/
+*.gbr
+*.gbl
+*.gtl
+*.gbs
+*.gts
+*.gbo
+*.gto
+*.gm1
+*.drl
+*.pos
+*.rpt
+*.ipc
+
+# KiCad local project/cache files
+fp-info-cache
+
+# CAD exports / temporary files
+*.stl~
+*.step~
+*.stp~
+*.f3d
+*.f3z
+
+# Onshape / downloaded duplicate files
+* copy.*
+* Copy.*
+
+# OS / editor temp files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+*.sublime-workspace
+*.sublime-project
+
+# GitHub Actions reports
+sketches-reports/
