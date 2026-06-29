@@ -1,0 +1,55 @@
+name: Compile Firmware
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  compile-arduino:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Remote ESP32-S3
+            fqbn: esp32:esp32:esp32s3
+            sketch: firmware/remote-firmware/remote_espnow
+
+          - name: Receiver ESP32-C3
+            fqbn: esp32:esp32:esp32c3
+            sketch: firmware/receiver-firmware/dongle_espnow_bridge
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Compile ${{ matrix.name }}
+        uses: arduino/compile-sketches@v1
+        with:
+          fqbn: ${{ matrix.fqbn }}
+          platforms: |
+            - name: esp32:esp32
+              source-url: https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          sketch-paths: |
+            - ${{ matrix.sketch }}
+          libraries: |
+            - name: U8g2
+
+  check-python:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+
+      - name: Check Python syntax
+        run: |
+          python -m py_compile firmware/raspberry-pi/music_controller.py
