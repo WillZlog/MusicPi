@@ -7,18 +7,23 @@
 #include <esp_wifi.h>
 #include <math.h>
 
-#define ESPNOW_CHANNEL 1 // MUST match the dongle
+
+#define ESPNOW_CHANNEL 1
+
+
 
 // ---- OLED: 2.42" SSD1309 128x64, 4-wire SPI 9(Change for wtv screen you are running, this is the one I had)
 U8G2_SSD1309_128X64_NONAME0_F_4W_SW_SPI u8g2(U8G2_R0, D13, D11, D10, D9, D8);
 
-struct Button
-{
-  uint8_t pin;
-  const char *cmd;
-  bool last;
-  uint32_t tLast;
-};
+
+
+
+
+
+// ----------CONSTANT VARIABLES------------
+const int NUM_BUTTONS = sizeof(buttons) / sizeof(buttons[0]);
+const uint32_t DEBOUNCE_MS = 40;
+
 Button buttons[] = {
     {D2, "PLAY_PAUSE", HIGH, 0},
     {D3, "NEXT", HIGH, 0},
@@ -27,28 +32,16 @@ Button buttons[] = {
     {D6, "VOL_DOWN", HIGH, 0},
     {D7, "BT_CONNECT", HIGH, 0},
 };
-const int NUM_BUTTONS = sizeof(buttons) / sizeof(buttons[0]);
-const uint32_t DEBOUNCE_MS = 40;
 
+//next conts
 const uint32_t NEXT_WINDOW_MS = 500;
 const int NEXT_TRIPLE = 3;
-int nextCount = 0;
-uint32_t nextDeadline = 0;
 
+// prev consts
 const uint32_t PREV_WINDOW_MS = 500;
 const int PREV_TRIPLE = 3;
-int prevCount = 0;
-uint32_t prevDeadline = 0;
 
-bool displayOn = true;
-
-// ---- service menu ----
-struct Service
-{
-  const char *label;
-  const char *cmd;
-  bool destructive;
-};
+// service menu consts
 const Service SERVICES[] = {
     {"Reconnect BT", "SVC_BT", false},
     {"Restart Spotify", "SVC_SPOTIFY", false},
@@ -59,6 +52,43 @@ const Service SERVICES[] = {
 };
 const int NUM_SERVICES = sizeof(SERVICES) / sizeof(SERVICES[0]);
 
+// display consts
+const int MENU_VISIBLE = 4;         // rows that fit under the header
+const uint32_t MENU_TIMEOUT = 8000; // ms of inactivity before auto-close
+const int TEXT_W = 104;       // px available for title / artist
+const uint32_t FRAME_MS = 40; // animation step (marquee + intros)
+
+// display/intro consts
+const uint32_t INTRO_MS = 2000; // how long the intro plays
+
+// esp32 communication consts
+const uint32_t HELLO_INTERVAL = 3000; // ms between HELLO keepalives
+const uint32_t STALE_MS = 6000; // no status for this long -> "offline"
+// ---------------------------
+
+
+
+// ---------STRUCTS---------
+struct Button
+{
+  uint8_t pin;
+  const char *cmd;
+  bool last;
+  uint32_t tLast;
+};
+
+struct Service
+{
+  const char *label;
+  const char *cmd;
+  bool destructive;
+};
+// ---------------------------
+
+
+
+// ---------ENUMS-----------
+
 enum UiMode
 {
   UI_NOWPLAYING,
@@ -66,31 +96,7 @@ enum UiMode
   UI_CONFIRM,
   UI_INTRO
 };
-UiMode ui = UI_NOWPLAYING;
-int menuSel = 0;                    // highlighted service
-int menuTop = 0;                    // first visible row (scroll offset)
-uint32_t menuDeadline = 0;          // auto-close time
-const int MENU_VISIBLE = 4;         // rows that fit under the header
-const uint32_t MENU_TIMEOUT = 8000; // ms of inactivity before auto-close
 
-static uint8_t dongle_mac[6];
-static bool have_dongle = false;
-static uint8_t rxSrc[6];              // sender MAC of the last frame
-const uint32_t HELLO_INTERVAL = 3000; // ms between HELLO keepalives
-uint32_t lastHelloMs = 0;
-uint32_t lastStatusMs = 0;      // 0 = never heard from the Pi
-const uint32_t STALE_MS = 6000; // no status for this long -> "offline"
-bool wasOnline = false;
-
-// ---- display ----
-const int TEXT_W = 104;       // px available for title / artist
-const uint32_t FRAME_MS = 40; // animation step (marquee + intros)
-uint32_t lastFrameMs = 0;
-int scroll1 = 0, scroll2 = 0;            // marquee offsets for title / artist
-bool scrolling = false;                  // any line currently overflowing?
-String shownLine1 = "", shownLine2 = ""; // text the marquee is tracking
-
-// theme and animation playing for radio stations
 enum Theme
 {
   TH_JAZZ,
@@ -101,22 +107,64 @@ enum Theme
   TH_WORLD,
   TH_DEFAULT
 };
-Theme introTheme = TH_DEFAULT;
-uint32_t introStart = 0;
-const uint32_t INTRO_MS = 2000; // how long the intro plays
-String lastRadioStation = "";   // last station we animated for
+// ---------------------------
 
+
+
+
+//-------GLOBAL VARIABLES----------
+//next vars
+int nextCount = 0;
+uint32_t nextDeadline = 0;
+
+//prev vars
+int prevCount = 0;
+uint32_t prevDeadline = 0;
+
+// service menu 
+UiMode ui = UI_NOWPLAYING;
+int menuSel = 0;                    // highlighted service
+int menuTop = 0;                    // first visible row (scroll offset)
+uint32_t menuDeadline = 0;          // auto-close time
+
+// dongle <-> remote communication variables
+static uint8_t dongle_mac[6];
+static bool have_dongle = false;
+static uint8_t rxSrc[6];              // sender MAC of the last frame
+uint32_t lastHelloMs = 0;
+uint32_t lastStatusMs = 0;      // 0 = never heard from the Pi
+bool wasOnline = false;
 static uint8_t BROADCAST[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-
-// status bytes received from the dongle
 static volatile bool rxReady = false;
 static char rxData[210];
 static volatile size_t rxLen = 0;
 
-// ---- status received from the Pi ----
+// display 
+uint32_t lastFrameMs = 0;
+int scroll1 = 0, scroll2 = 0;            // marquee offsets for title / artist
+bool scrolling = false;                  // any line currently overflowing?
+String shownLine1 = "", shownLine2 = ""; // text the marquee is tracking
+bool displayOn = true;
+
+
+// theme and animation playing for radio stations
+Theme introTheme = TH_DEFAULT;
+uint32_t introStart = 0;
+String lastRadioStation = "";   // last station we animated for
+
+//status received from the Pi
 String mode = "SPOTIFY", state = "PAUSED", line1 = "", line2 = "", vol = "?";
 bool dirty = true;
+// ---------------------------
 
+
+
+
+
+// compatibale with both versions of esp arduino versions
+// if statement creates correct onRecv() for version
+//* both versions define src, src = MAC address of the device that sent ESP-NOW
+// MAC Address is 6 bytes, 6 bytes are saved to rxSRC
 #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
 void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len)
 {
@@ -126,22 +174,35 @@ void onRecv(const uint8_t *mac, const uint8_t *data, int len)
 {
   const uint8_t *src = mac;
 #endif
-  memcpy(rxSrc, src, 6); // remember who sent it (the dongle)
+  memcpy(rxSrc, src, 6);
+
+  // checks if there is already an unread message, if so then ignore the one just recieved 
   if (rxReady)
     return;
+
+  // stores data inside rxData safely
   size_t n = (len < (int)sizeof(rxData) - 1) ? len : sizeof(rxData) - 1;
   memcpy(rxData, data, n);
   rxData[n] = '\0';
+
+  // store length of message and say that it is ready to recieve new message
   rxLen = n;
   rxReady = true;
 }
 
+// sends a cmd over espnow using built in function: esp_now_send()
+// sends to everyone if doesn't know dongle MAC Address
 void sendCmd(const char *cmd)
 {
   const uint8_t *dst = have_dongle ? dongle_mac : BROADCAST;
   esp_now_send(dst, (const uint8_t *)cmd, strlen(cmd));
 }
 
+//starts up the remote
+//serial port at 115200 baud
+//sets buttons as input pullup
+//puts esp32 in station mode for espnow
+//sets espnow channel, 1
 void setup()
 {
   Serial.begin(115200);
@@ -152,28 +213,32 @@ void setup()
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
-  esp_wifi_set_ps(WIFI_PS_NONE);
+  esp_wifi_set_ps(WIFI_PS_NONE); //* disables wifi power saving, this is optional, makes the signal more reliable and faster but also eats more power, if using battery turn this on, but for now its fine
   if (esp_now_init() != ESP_OK)
   {
     Serial.println("esp_now_init failed");
   }
-  esp_now_register_recv_cb(onRecv);
-
+  esp_now_register_recv_cb(onRecv); // on recieve message run onRecv()
+  
+  // sets up broadcast peer, adds the broadcast address as an espnow peer, [0xFF, 0xFF...]
   esp_now_peer_info_t peer = {};
   memcpy(peer.peer_addr, BROADCAST, 6);
   peer.channel = ESPNOW_CHANNEL;
   peer.encrypt = false;
   esp_now_add_peer(&peer);
 
+  //starts up the oled
   u8g2.begin();
   u8g2.setBusClock(2000000);
   drawScreen();
 }
 
+
+
 void loop()
 {
   readButtons();
-  uint32_t now = millis();
+  uint32_t now = millis(); // async delay()s basically along with below code
 
   if (nextDeadline && now >= nextDeadline)
     flushNext();
