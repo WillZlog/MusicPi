@@ -9,7 +9,7 @@
 
 
 #define ESPNOW_CHANNEL 1
-#define MUSICPI_VERSION 1.1
+#define MUSICPI_VERSION 1.0.0
 
 
 
