@@ -2,6 +2,11 @@ import serial
 import subprocess
 import time
 import re
+from fastapi import FastAPI
+from pydantic import BaseModel
+import threading
+import uvicorn
+
 
 PORT = "/dev/ttyACM0" 
 BAUD = 115200
@@ -108,11 +113,11 @@ def radio_is_playing():
 def radio_stop():
     global radio_player
     if radio_is_playing():
-        radio_player.terminate()
+        radio_player.terminate() # type: ignore
         try:
-            radio_player.wait(timeout=2)
+            radio_player.wait(timeout=2) # type: ignore
         except subprocess.TimeoutExpired:
-            radio_player.kill()
+            radio_player.kill() # type: ignore
     radio_player = None
 
 
@@ -310,10 +315,16 @@ def send_status():
     msg = "ST|{}|{}|{}|{}|{}\n".format(
         mode, state, _clean(line1), _clean(line2), vol
     )
+    update_status(mode, state, _clean(title), _clean(artist))
     try:
         ser.write(msg.encode("utf-8", errors="ignore"))
     except Exception as e:
         log("status write error:", e)
+
+
+
+def run_api():
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 
 
 log("Connecting to Bluetooth speaker...")
@@ -328,6 +339,34 @@ ser.reset_input_buffer()
 log("ESP32 controller ready (Spotify mode).")
 log("Triple-press PLAY_PAUSE to toggle radio mode.")
 send_status()
+
+currentStatus = {
+    "mode": "UNKNOWN",
+    "state":"NONE",
+    "title": "",
+    "artist": "",
+    "station": "",
+    "volume": 0,
+    "updated_at": time.time()
+}
+
+app = FastAPI()
+
+api_thread = threading.Thread(target=run_api, daemon=True)
+api_thread.start()
+
+@app.get("/")
+def return_status():
+    return currentStatus
+
+def update_status(mode = "", state = "", title = "", artist = "", station = "", volume = 0):
+    currentStatus["mode"] = mode
+    currentStatus["state"] = state
+    currentStatus["title"] = title
+    currentStatus["artist"] = artist
+    currentStatus["station"] = station
+    currentStatus["volume"] = volume
+    currentStatus["updated_at"] = time.time()
 
 try:
     while True:
@@ -352,6 +391,7 @@ try:
         if now - last_status >= STATUS_INTERVAL:
             send_status()
             last_status = now
+        update_status()
 
 except KeyboardInterrupt:
     log("Stopping...")
