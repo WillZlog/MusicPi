@@ -67,6 +67,7 @@ const Service SERVICES[] = {
     {"Bounce Wi-Fi", "SVC_WIFI", false},
     {"Shutdown", "SVC_SHUTDOWN", true},
     {"Reboot", "SVC_REBOOT", true},
+    {"Test buttons", "TEST", false}
 };
 const int NUM_SERVICES = sizeof(SERVICES) / sizeof(SERVICES[0]);
 
@@ -79,6 +80,7 @@ const uint32_t FRAME_MS = 40; // animation step (marquee + intros)
 // display/intro consts
 const uint32_t INTRO_MS = 2000; // how long the intro plays
 const uint32_t DISPLAY_TIMEOUT = 15000;
+const uint32_t TEST_TIMEOUT = 10000;
 
 // esp32 communication consts
 const uint32_t HELLO_INTERVAL = 3000; // ms between HELLO keepalives
@@ -94,7 +96,8 @@ enum UiMode
   UI_MENU,
   UI_CONFIRM,
   UI_INTRO,
-  UI_STARTUP
+  UI_STARTUP,
+  UI_TEST
 };
 
 enum Theme
@@ -160,6 +163,16 @@ String lastRadioStation = "";   // last station we animated for
 //status received from the Pi
 String mode = "SPOTIFY", state = "PAUSED", line1 = "", line2 = "", vol = "?";
 bool dirty = true;
+
+//test
+bool testing = false;
+bool play = false;
+bool next = false;
+bool prev = false;
+bool volU = false;
+bool volD = false;
+uint32_t testStart;
+
 // ---------------------------
 
 
@@ -244,6 +257,15 @@ void loop()
 {
   readButtons();
   uint32_t now = millis(); // async delay()s basically along with below code
+
+  if (testing)
+  {
+    if (now - testStart > TEST_TIMEOUT)
+    {
+      testing = false;
+      ui = UI_NOWPLAYING;
+    }
+  }
 
   if (!startupDone)
     if (now < 3000)
@@ -459,6 +481,7 @@ void handlePress(const char *cmd)
   {
     return;
   }
+
   if (ui == UI_INTRO)
     ui = UI_NOWPLAYING; // any press dismisses the intro
 
@@ -506,6 +529,37 @@ void handlePress(const char *cmd)
 
   menuDeadline = now + MENU_TIMEOUT;
 
+  if (ui == UI_TEST)
+  {
+    if (strcmp(cmd, "NEXT") == 0)
+    {
+      next = true;
+      return;
+    }
+    else if (strcmp(cmd, "PREV") == 0)
+    {
+      prev = true;
+      return;
+    }
+    else if (strcmp(cmd, "PLAY_PAUSE") == 0)
+    {
+      play = true;
+      return;
+    }
+    else if (strcmp(cmd, "VOL_UP") == 0)
+    {
+      volU = true;
+      return;
+    }
+    else if (strcmp(cmd, "VOL_DOWN") == 0)
+    {
+      volD = true;
+      return;
+    }
+    else {
+      return;
+    }
+  }
   if (ui == UI_MENU)
   {
     if (strcmp(cmd, "NEXT") == 0)
@@ -525,6 +579,14 @@ void handlePress(const char *cmd)
       if (SERVICES[menuSel].cmd == "SAO")
       {
         displayAlwaysOn = !displayAlwaysOn;
+      }
+      else if (SERVICES[menuSel].cmd == "TEST")
+      {
+        UI = UI_TEST;
+        dirty = true;
+        testing = true;
+        testStart = now;
+        play = next = volU = volD = prev = false;
       }
       else if (SERVICES[menuSel].destructive)
       {
@@ -642,6 +704,9 @@ void drawScreen()
 
   switch (ui)
   {
+  case UI_TEST:
+    drawTestScreen();
+    break;
   case UI_MENU:
     drawMenu();
     break;
@@ -656,6 +721,24 @@ void drawScreen()
   default:
     drawNowPlaying();
   }
+}
+
+void drawTestScreen()
+{
+  String strPlay = play ? "PRESSED" : "----";
+  String strNext = next ? "PRESSED" : "----";
+  String strPrev = prev ? "PRESSED" : "----";
+  String strVolU = volU ? "PRESSED" : "----";
+  String strVolD = volD ? "PRESSED" : "----"
+
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_profont12_mf);
+  u8g2.drawStr(0, 7, "Play " + strPlay.c_str());
+  u8g2.drawStr(0, 14, "Next " + strNext.c_str());
+  u8g2.drawStr(0, 21, "Prev " + strPrev.c_str());
+  u8g2.drawStr(0, 28, "VolUp " + strVolU.c_str());
+  u8g2.drawStr(0, 35, "VolDown " + strVolD.c_str());
+  u8g2.sendBuffer();
 }
 
 void drawStartup()
