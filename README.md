@@ -102,7 +102,7 @@ It controls playback with no phone, or computer necessary, so you can relax and 
 
 ## AI DISCLOSURE
 
-I did use AI in the beginning of the project, but stopped and rewrote/refactored all of the AI code by the end. All PCB and CAD files were done by me.
+I did use AI in the beginning of the project, but stopped and rewrote/refactored all of the AI code by the end. All PCB and CAD files AND documentation were done by me.
 
 ## Authors
 
